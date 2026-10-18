@@ -19,7 +19,15 @@ pms(first, last, comparator);
 pms(container, comparator);
 ```
 
-pmsort is a drop-in replacement for [std::stable_sort()](https://en.cppreference.com/cpp/algorithm/stable_sort). Just include the header and call ```pms()``` to start using partition merge sort.
+`pmsort` is a drop-in replacement for [`std::stable_sort()`](https://en.cppreference.com/cpp/algorithm/stable_sort). Just include the header and call ```pms()``` to start using partition merge sort.
 
 # Visualization
+This visualization below shows how `pmsort` sorting 256 random elements 
 ![Visualization](imgs/pms256.gif)
+
+# Benchmark
+ OS: `Ubuntu 24.04.5 LTS x86_64`<br>
+ Compiler flags: `-O3 -march=native -std=c++20`
+
+ 
+ ![benchmark](imgs/bench.png)
