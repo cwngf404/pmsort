@@ -47,3 +47,8 @@ This visualization below shows how `pmsort` sorting 256 random elements
 
 *This does not mean `pmsort` always faster than [`std::sort`](https://en.cppreference.com/cpp/algorithm/sort), there are many implementations across different compilers*
 
+# Algorithm
+## The best cases
+Before sorting, `pmsort` scans linear through the array to check if it is sorted, strictly descending to return/reverse the array. It also scans for natural runs, if the array contains only few runs, it bypasses partitioning and merge them directly.
+## Partitioning
+**`pmsort`** employs a dynamic multi-way partitioning strategy where the number of partitions scales with the current data range (as a power of 2, up to 256 partitions per layer). It uses a deterministic [Weyl sequence](https://en.wikipedia.org/wiki/Weyl_sequence) for stratified sampling, sorts the samples, filters out duplicate values to establish unique splitters (padded to a power of 2), and organizes them into a [Eytzinger layout](https://algorithmica.org/en/eytzinger).
