@@ -1,4 +1,5 @@
 # Pmsort
+![status developing](https://img.shields.io/badge/status-developing-yellow?style=for-the-badge&logo=github)<br>
 pmsort (partition merge sort) is an adaptive, stable sorting algorithm by using the multi-way distribution partitioning to achieve higher performance on modern CPUs. Codes are available for free under MIT license. 
 
 ```
