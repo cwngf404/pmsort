@@ -5,10 +5,10 @@
  * Require: C++17+
  *
  * Usage:
- *   pms(first, last);
- *   pms(first, last, comparator);
- *   pms(container);
- *   pms(container, comparator);
+ *   pmsort(first, last);
+ *   pmsort(first, last, comparator);
+ *   pmsort(container);
+ *   pmsort(container, comparator);
  */
 #ifndef PMS_HPP
 #define PMS_HPP
@@ -35,13 +35,15 @@ inline constexpr std::size_t kSamplesPerPartition = 16;
 inline constexpr int         kMaxDepth            = 48;   // Recursion limit, deeper ranges fall back to merge
 inline constexpr std::size_t kMaxRuns             = 16;   // At most this many natural runs: merge them directly
 
-// Element types handled by Sorter; other types use std::stable_sort
+// Element types handled by Sorter; other types use std::stable_sort.
+// Move-only types must be nothrow-movable, so an exception cannot lose elements.
 template <class T>
 inline constexpr bool is_supported_v =
-    !std::is_same_v<T, bool> &&
     std::is_default_constructible_v<T> &&
-    std::is_copy_assignable_v<T> &&
-    std::is_move_constructible_v<T>;
+    std::is_move_constructible_v<T> &&
+    std::is_move_assignable_v<T> &&
+    (std::is_copy_assignable_v<T> ||
+     (std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T>));
 
 // Returns true if the range is already sorted, or was strictly descending and got reversed.
 // Random data exits after a few elements. Only strictly descending ranges are reversed,
@@ -72,31 +74,43 @@ class Sorter {
     static constexpr std::size_t kLeafSize =
         std::max<std::size_t>(kMaxPartitions * kSamplesPerPartition, (64 * 1024) / sizeof(T));
 
+    // Copyable types keep splitters and samples by value (cache friendly, no indirection).
+    // Move-only types keep pointers into the source range, which stay valid until the scatter step.
+    static constexpr bool kCopyKeys = std::is_copy_assignable_v<T>;
+    using Key = std::conditional_t<kCopyKeys, T, const T*>;
+
+    static const T& keyRef(const Key& key) {
+        if constexpr (kCopyKeys) return key; else return *key;
+    }
+    static void setKey(Key& dst, const T& value) {
+        if constexpr (kCopyKeys) dst = value; else dst = &value;
+    }
+
     // Splitter tree in Eytzinger layout; views memory owned by Sorter
     struct SplitterTree {
-        T* nodes  = nullptr;        // Tree layout, index 1 is the root
-        T* sorted = nullptr;        // Splitters in sorted order
+        Key* nodes  = nullptr;      // Tree layout, index 1 is the root
+        Key* sorted = nullptr;      // Splitters in sorted order
         unsigned rangeCount = 2;    // Ranges between splitters (power of 2)
         unsigned depth      = 1;    // Tree levels: log2(rangeCount)
 
         // Converts a tree leaf into a partition id
         inline unsigned leafToId(unsigned leaf, const T& value, const Less& less) const {
-            unsigned below = leaf - rangeCount;                                          // Splitters smaller than value
-            unsigned equal = (below < rangeCount - 1) & (!less(value, sorted[below]));   // Equals a splitter?
-            return 2 * below + equal;                                                    // Even id: range, odd id: equal to a splitter
+            unsigned below = leaf - rangeCount;                                                    // Splitters smaller than value
+            unsigned equal = (below < rangeCount - 1) & (!less(value, keyRef(sorted[below])));     // Equals a splitter?
+            return 2 * below + equal;                                                              // Even id: range, odd id: equal to a splitter
         }
 
         inline bool inPartition(unsigned id, const T& value, const Less& less) const {
             unsigned index = id >> 1;
-            if (id & 1) return !less(value, sorted[index]) && !less(sorted[index], value);
-            return (index == 0 || less(sorted[index - 1], value)) &&
-                   (index == rangeCount - 1 || less(value, sorted[index]));
+            if (id & 1) return !less(value, keyRef(sorted[index])) && !less(keyRef(sorted[index]), value);
+            return (index == 0 || less(keyRef(sorted[index - 1]), value)) &&
+                   (index == rangeCount - 1 || less(value, keyRef(sorted[index])));
         }
 
         inline unsigned classify(const T& value, const Less& less) const {
             unsigned node = 1;
             for (unsigned level = 0; level < depth; ++level)
-                node = 2 * node + (less(nodes[node], value) ? 1u : 0u);
+                node = 2 * node + (less(keyRef(nodes[node]), value) ? 1u : 0u);
             return leafToId(node, value, less);
         }
 
@@ -105,10 +119,10 @@ class Sorter {
             unsigned n0 = 1, n1 = 1, n2 = 1, n3 = 1;
 
             for (unsigned level = 0; level < depth; ++level) {
-                n0 = 2 * n0 + (less(nodes[n0], src[0]) ? 1u : 0u);
-                n1 = 2 * n1 + (less(nodes[n1], src[1]) ? 1u : 0u);
-                n2 = 2 * n2 + (less(nodes[n2], src[2]) ? 1u : 0u);
-                n3 = 2 * n3 + (less(nodes[n3], src[3]) ? 1u : 0u);
+                n0 = 2 * n0 + (less(keyRef(nodes[n0]), src[0]) ? 1u : 0u);
+                n1 = 2 * n1 + (less(keyRef(nodes[n1]), src[1]) ? 1u : 0u);
+                n2 = 2 * n2 + (less(keyRef(nodes[n2]), src[2]) ? 1u : 0u);
+                n3 = 2 * n3 + (less(keyRef(nodes[n3]), src[3]) ? 1u : 0u);
             }
 
             ids[0] = leafToId(n0, src[0], less);
@@ -124,9 +138,9 @@ class Sorter {
 
     std::unique_ptr<T[]> scratch_;                    // Second buffer (size_ elements)
     std::unique_ptr<std::uint16_t[]> partitionIds_;   // Partition id of each element (only when size_ > kLeafSize)
-    std::unique_ptr<T[]> splitterStore_;              // Tree, splitters and samples, shared by all levels
+    std::unique_ptr<Key[]> splitterStore_;              // Tree, splitters and samples, shared by all levels
     SplitterTree splitterTree_;
-    T* samples_ = nullptr;
+    Key* samples_ = nullptr;
     std::vector<std::size_t> runBounds_;              // Run boundaries: 0, end of run 1, end of run 2, ...
     std::size_t partitionCounts_[2 * kMaxPartitions];
     std::size_t writePos_[2 * kMaxPartitions];
@@ -160,7 +174,7 @@ class Sorter {
         for (std::size_t i = 0; i < sampleCount; ++i) {
             weyl += 0x9E3779B97F4A7C15ull;
             const std::uint64_t offset = ((weyl >> 32) * span) >> 32;   // In [0, span)
-            samples_[i] = src[i * stride + offset];
+            setKey(samples_[i], src[i * stride + offset]);
         }
     }
 
@@ -171,13 +185,17 @@ class Sorter {
         const std::size_t sampleCount = partitions * kSamplesPerPartition;
 
         takeSamples(src, count, sampleCount);
-        std::sort(samples_, samples_ + sampleCount, less_);
+        if constexpr (kCopyKeys)
+            std::sort(samples_, samples_ + sampleCount, less_);
+        else
+            std::sort(samples_, samples_ + sampleCount,
+                      [this](const Key& a, const Key& b) { return less_(*a, *b); });
 
         unsigned splitterCount = 0;
         for (std::size_t i = 0; i + 1 < partitions; ++i) {
-            const T& candidate = samples_[(i + 1) * sampleCount / partitions];
+            const Key& candidate = samples_[(i + 1) * sampleCount / partitions];
 
-            if (splitterCount == 0 || less_(tree.sorted[splitterCount - 1], candidate))
+            if (splitterCount == 0 || less_(keyRef(tree.sorted[splitterCount - 1]), keyRef(candidate)))
                 tree.sorted[splitterCount++] = candidate;  // Skip duplicate splitters
         }
 
@@ -238,29 +256,29 @@ class Sorter {
     // Merges [leftPos, leftEnd) and [rightPos, rightEnd) from src into dst starting at outPos.
     // Ties take the left side (stable).
     void mergeRange(
-        const T* src, T* dst,
+        T* src, T* dst,
         std::size_t leftPos, std::size_t leftEnd,
         std::size_t rightPos, std::size_t rightEnd,
         std::size_t outPos
     ) {
         while (leftPos < leftEnd && rightPos < rightEnd) {
             bool takeRight = less_(src[rightPos], src[leftPos]);
-            dst[outPos++] = takeRight ? src[rightPos] : src[leftPos];
+            dst[outPos++] = std::move(takeRight ? src[rightPos] : src[leftPos]);
             rightPos += takeRight;
             leftPos += !takeRight;
         }
 
-        while (leftPos < leftEnd) dst[outPos++] = src[leftPos++];
-        while (rightPos < rightEnd) dst[outPos++] = src[rightPos++];
+        while (leftPos < leftEnd) dst[outPos++] = std::move(src[leftPos++]);
+        while (rightPos < rightEnd) dst[outPos++] = std::move(src[rightPos++]);
     }
 
-    void merge(const T* src, T* dst, std::size_t lo, std::size_t mid, std::size_t hi) {
+    void merge(T* src, T* dst, std::size_t lo, std::size_t mid, std::size_t hi) {
         mergeRange(src, dst, lo, mid, mid, hi, lo);
     }
 
     // Two independent merges interleaved to overlap their latency
     void mergeTwo(
-        const T* src, T* dst,
+        T* src, T* dst,
         std::size_t loA, std::size_t midA, std::size_t hiA,
         std::size_t loB, std::size_t midB, std::size_t hiB
     ) {
@@ -269,12 +287,12 @@ class Sorter {
 
         while (leftA < midA && rightA < hiA && leftB < midB && rightB < hiB) {
             bool takeRightA = less_(src[rightA], src[leftA]);
-            dst[outA++] = takeRightA ? src[rightA] : src[leftA];
+            dst[outA++] = std::move(takeRightA ? src[rightA] : src[leftA]);
             rightA += takeRightA;
             leftA += !takeRightA;
 
             bool takeRightB = less_(src[rightB], src[leftB]);
-            dst[outB++] = takeRightB ? src[rightB] : src[leftB];
+            dst[outB++] = std::move(takeRightB ? src[rightB] : src[leftB]);
             rightB += takeRightB;
             leftB += !takeRightB;
         }
@@ -313,13 +331,13 @@ class Sorter {
                 if (needMergeA)
                     merge(src, dst, lo, midA, hiA);
                 else
-                    std::copy(src + lo, src + hiA, dst + lo);  // Already in order
+                    std::move(src + lo, src + hiA, dst + lo);  // Already in order
 
                 if (loB < count) {
                     if (needMergeB)
                         merge(src, dst, loB, midB, hiB);
                     else
-                        std::copy(src + loB, src + hiB, dst + loB);
+                        std::move(src + loB, src + hiB, dst + loB);
                 }
             }
 
@@ -327,7 +345,7 @@ class Sorter {
         }
 
         if (src != result)
-            std::copy(src, src + count, result);
+            std::move(src, src + count, result);
     }
 
     // Merges data[lo, mid) and data[mid, hi) in place; buf holds the left half. Uses galloping.
@@ -446,7 +464,7 @@ class Sorter {
             runBounds_.resize(kept);
         }
 
-        if (result != data) std::copy(data, data + count, result);
+        if (result != data) std::move(data, data + count, result);
     }
 
     // Stable out-of-place partitioning; the two buffers swap roles at each level
@@ -487,11 +505,11 @@ class Sorter {
         }
         starts[idCount] = offset;
 
-        const T* in = src + lo;
+        T* in = src + lo;
         T* out = dst + lo;
 
         for (std::size_t i = 0; i < count; ++i)
-            out[writePos_[ids[i]]++] = in[i];  // Keeps the original order (stable)
+            out[writePos_[ids[i]]++] = std::move(in[i]);  // Keeps the original order (stable)
 
         for (std::size_t id = 0; id < idCount; ++id) {
             if (starts[id + 1] == starts[id]) continue;
@@ -501,7 +519,7 @@ class Sorter {
 
             if (id & 1) {  // All elements equal: done
                 if (dst != data_)
-                    std::copy(dst + partLo, dst + partHi, data_ + partLo);
+                    std::move(dst + partLo, dst + partHi, data_ + partLo);
             } else {
                 partitionSort(dst, src, partLo, partHi, depth + 1);
             }
@@ -528,7 +546,7 @@ public:
             const std::size_t partitions = choosePartitionCount(size_);
             partitionIds_.reset(new std::uint16_t[size_]);
             // tree nodes[partitions] + sorted splitters[partitions] + samples[partitions * kSamplesPerPartition]
-            splitterStore_.reset(new T[partitions * (2 + kSamplesPerPartition)]);
+            splitterStore_.reset(new Key[partitions * (2 + kSamplesPerPartition)]);
             splitterTree_.nodes  = splitterStore_.get();
             splitterTree_.sorted = splitterTree_.nodes + partitions;
             samples_             = splitterTree_.sorted + partitions;
@@ -549,7 +567,7 @@ inline constexpr bool is_contiguous_v =
         (std::is_same_v<It, typename std::vector<V>::iterator> ||
          std::is_same_v<It, std::string::iterator>));
 
-// Detects iterator types, so the container overload is skipped for pms(first, last)
+// Detects iterator types, so the container overload is skipped for pmsort(first, last)
 template <class T, class = void>
 struct is_iterator : std::false_type {};
 template <class T>
@@ -558,6 +576,23 @@ struct is_iterator<T, std::void_t<typename std::iterator_traits<T>::iterator_cat
 template <class T>
 inline constexpr bool is_iterator_v = is_iterator<T>::value;
 
+// bool needs no sorting algorithm: count the true values and write the result back
+template <class It, class Less>
+void sortBools(It first, It last, const Less& less) {
+    const bool falseFirst = less(false, true);
+    if (!falseFirst && !less(true, false)) return;  // Both values are equivalent
+
+    const auto trues  = std::count(first, last, true);
+    const auto falses = (last - first) - trues;
+    if (falseFirst) {
+        std::fill(first, first + falses, false);
+        std::fill(first + falses, last, true);
+    } else {
+        std::fill(first, first + trues, true);
+        std::fill(first + trues, last, false);
+    }
+}
+
 } // namespace pms_detail
 
 /**
@@ -565,48 +600,54 @@ inline constexpr bool is_iterator_v = is_iterator<T>::value;
  *
  * Requirements:
  *  - Random-access iterators; `less` is copyable and callable as const.
- *  - Element type is default-constructible, copy-assignable and move-constructible.
- *    Other types fall back to std::stable_sort.
+ *  - Element type is default-constructible, move-constructible and move-assignable, and either
+ *    copy-assignable or nothrow-movable (so move-only types work). Other types fall back to
+ *    std::stable_sort.
+ *  - bool is sorted by counting: O(n), no buffer.
  *
  * Contiguous iterators sort in place. Others (e.g. deque) go through a temporary buffer.
  */
 template <class It,
           class Less = std::less<typename std::iterator_traits<It>::value_type>>
-void pms(It first, It last, Less less = Less{}) {
+void pmsort(It first, It last, Less less = Less{}) {
     using Traits = std::iterator_traits<It>;
     using V = typename Traits::value_type;
 
     static_assert(std::is_base_of_v<std::random_access_iterator_tag,
                   typename Traits::iterator_category>,
-                  "pms requires random access iterators");
+                  "pmsort requires random access iterators");
     static_assert(!std::is_const_v<std::remove_reference_t<typename Traits::reference>>,
-                  "pms cannot sort a const range");
+                  "pmsort cannot sort a const range");
 
     const auto distance = last - first;
     if (distance < 2) return;
-    const auto count = static_cast<std::size_t>(distance);
+    [[maybe_unused]] const auto count = static_cast<std::size_t>(distance);
 
-    // O(n) check without allocation, works for any random-access iterator
-    if (pms_detail::finishIfPresorted(first, last, less)) return;
-
-    if constexpr (!pms_detail::is_supported_v<V>) {
-        std::stable_sort(first, last, less);
-    } else if constexpr (pms_detail::is_contiguous_v<It>) {
-        pms_detail::Sorter<V, Less>(std::addressof(*first), count, std::move(less)).run();
+    if constexpr (std::is_same_v<V, bool>) {
+        pms_detail::sortBools(first, last, less);
     } else {
-        std::unique_ptr<V[]> buffer(new V[count]);
-        std::move(first, last, buffer.get());
-        pms_detail::Sorter<V, Less>(buffer.get(), count, std::move(less)).run();
-        std::move(buffer.get(), buffer.get() + count, first);
+        // O(n) check without allocation, works for any random-access iterator
+        if (pms_detail::finishIfPresorted(first, last, less)) return;
+
+        if constexpr (!pms_detail::is_supported_v<V>) {
+            std::stable_sort(first, last, less);
+        } else if constexpr (pms_detail::is_contiguous_v<It>) {
+            pms_detail::Sorter<V, Less>(std::addressof(*first), count, std::move(less)).run();
+        } else {
+            std::unique_ptr<V[]> buffer(new V[count]);
+            std::move(first, last, buffer.get());
+            pms_detail::Sorter<V, Less>(buffer.get(), count, std::move(less)).run();
+            std::move(buffer.get(), buffer.get() + count, first);
+        }
     }
 }
 
-// pms(c) / pms(c, comp) for any container with begin() / end()
+// pmsort(c) / pmsort(c, comp) for any container with begin() / end()
 template <class C, class Less = std::less<>,
           class = std::void_t<decltype(std::begin(std::declval<C&>()))>,
           class = std::enable_if_t<!pms_detail::is_iterator_v<Less>>>
-void pms(C& c, Less less = Less{}) {
-    pms(std::begin(c), std::end(c), less);
+void pmsort(C& c, Less less = Less{}) {
+    pmsort(std::begin(c), std::end(c), less);
 }
 
 #endif // PMS_HPP
