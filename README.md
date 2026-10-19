@@ -49,6 +49,10 @@ This visualization below shows how `pmsort` sorting 256 random elements
 
 # Algorithm
 ## The best cases
-Before sorting, `pmsort` scans linear through the array to check if it is sorted, strictly descending to return/reverse the array. It also scans for natural runs, if the array contains only few runs, it bypasses partitioning and merge them directly.
+Before sorting, `pmsort` scans linearly through the array to check if it is sorted or strictly descending, in order to return or reverse the array. It also scans for natural runs; if the array contains only a few runs, it bypasses partitioning and merges them directly
+
 ## Partitioning
 **`pmsort`** employs a dynamic multi-way partitioning strategy where the number of partitions scales with the current data range (as a power of 2, up to 256 partitions per layer). It uses a deterministic [Weyl sequence](https://en.wikipedia.org/wiki/Weyl_sequence) for stratified sampling, sorts the samples, filters out duplicate values to establish unique splitters (padded to a power of 2), and organizes them into a [Eytzinger layout](https://algorithmica.org/en/eytzinger).
+For any value, `pmsort` traverses the Eytzinger tree from the root down to a leaf by comparing the element against node splitters at each level. Reaching a leaf maps the element to a precise partition ID—distinguishing between open value intervals (even IDs) and exact-match equivalence classes (odd IDs) that require no further division. After it, `pmsort` finds offset for each partitions and scatters all the elements to right partition from left to right. For even IDs, algorithm continues recursive partitioning until the size reaches the leaf level or the maximum recursive depth is reached.
+
+## Merge
