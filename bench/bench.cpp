@@ -1,10 +1,8 @@
-
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -16,19 +14,18 @@
 
 using namespace std;
 using Clock = chrono::steady_clock;
-using ll = long long;
-
-// config
 
 constexpr size_t N = 10'000'000;
 constexpr int RUNS = 5;
 constexpr size_t NEARLY_SWAPS = N / 1000;
 
 constexpr uint32_t SEED = 4042026;
-
 constexpr int DUP_RANGE = 10'000;
 constexpr int ZIPF_RANGE = 100'000;
 constexpr double ZIPF_EXPONENT = 1.2;
+
+constexpr int ALGORITHM_COUNT = 3;
+constexpr int CASE_COUNT = 6;
 
 enum Algorithm {
     PMSORT = 0,
@@ -36,13 +33,13 @@ enum Algorithm {
     STABLE_SORT = 2
 };
 
-const array<string, 3> ALG_NAMES = {
+const array<string, ALGORITHM_COUNT> ALG_NAMES = {
     "pmsort",
     "std::sort",
     "std::stable_sort"
 };
 
-const array<string, 6> CASE_NAMES = {
+const array<string, CASE_COUNT> CASE_NAMES = {
     "Random",
     "Duplicates",
     "Nearly sorted",
@@ -53,15 +50,19 @@ const array<string, 6> CASE_NAMES = {
 
 mt19937 rng(SEED);
 mt19937_64 rng64(SEED);
+mt19937 orderRng(SEED ^ 0x4042026u);
 
-// Generate one Zipf distributed 
+// build the zipf cumulative distribution
 vector<double> buildZipfCDF() {
     vector<double> cdf(ZIPF_RANGE);
     double total = 0.0;
 
     for (int i = 1; i <= ZIPF_RANGE; ++i) {
-        total += 1.0 / pow(static_cast<double>(i),
-                           ZIPF_EXPONENT);
+        total += 1.0 / pow(
+            static_cast<double>(i),
+            ZIPF_EXPONENT
+        );
+
         cdf[i - 1] = total;
     }
 
@@ -71,8 +72,10 @@ vector<double> buildZipfCDF() {
     return cdf;
 }
 
-int sampleZipf(const vector<double>& cdf,
-               uniform_real_distribution<double>& dist) {
+int sampleZipf(
+    const vector<double>& cdf,
+    uniform_real_distribution<double>& dist
+) {
     double x = dist(rng64);
 
     auto it = lower_bound(cdf.begin(), cdf.end(), x);
@@ -80,15 +83,18 @@ int sampleZipf(const vector<double>& cdf,
     return static_cast<int>(it - cdf.begin()) + 1;
 }
 
-// Data generator
-
-vector<int> generateData(int type,
-                         const vector<double>& zipfCDF) {
+// generate benchmark data
+vector<int> generateData(
+    int type,
+    const vector<double>& zipfCDF
+) {
     vector<int> a(N);
 
     switch (type) {
-    case 0: { // Random
-        uniform_int_distribution<int> dist(1, 1'000'000'000);
+    case 0: {
+        uniform_int_distribution<int> dist(
+            1, 1'000'000'000
+        );
 
         for (int& x : a)
             x = dist(rng);
@@ -96,8 +102,10 @@ vector<int> generateData(int type,
         break;
     }
 
-    case 1: { // Duplicates:1- 10,000
-        uniform_int_distribution<int> dist(1, DUP_RANGE);
+    case 1: {
+        uniform_int_distribution<int> dist(
+            1, DUP_RANGE
+        );
 
         for (int& x : a)
             x = dist(rng);
@@ -105,18 +113,24 @@ vector<int> generateData(int type,
         break;
     }
 
-    case 2: { // Nearly sorted
+    case 2: {
         iota(a.begin(), a.end(), 0);
 
-        uniform_int_distribution<size_t> pos(0, N - 1);
+        uniform_int_distribution<size_t> pos(
+            0, N - 1
+        );
 
-        for (size_t i = 0; i < NEARLY_SWAPS; ++i)
-            swap(a[pos(rng)], a[pos(rng)]);
+        for (size_t i = 0; i < NEARLY_SWAPS; ++i) {
+            size_t x = pos(rng);
+            size_t y = pos(rng);
+
+            swap(a[x], a[y]);
+        }
 
         break;
     }
 
-    case 3: { // Pipe organ: 0, 1, 2, ..., peak, ... , 2, 1, 0
+    case 3: {
         for (size_t i = 0; i < N; ++i) {
             a[i] = static_cast<int>(
                 min(i, N - 1 - i)
@@ -126,14 +140,17 @@ vector<int> generateData(int type,
         break;
     }
 
-    case 4: { // Reverse sorted
+    case 4: {
         iota(a.begin(), a.end(), 0);
         reverse(a.begin(), a.end());
+
         break;
     }
 
-    case 5: { // Zipf distribution
-        uniform_real_distribution<double> dist(0.0, 1.0);
+    case 5: {
+        uniform_real_distribution<double> dist(
+            0.0, 1.0
+        );
 
         for (int& x : a)
             x = sampleZipf(zipfCDF, dist);
@@ -145,8 +162,7 @@ vector<int> generateData(int type,
     return a;
 }
 
-// Algorithm
-
+// run the selected sorting algorithm
 void runSort(int algorithm, vector<int>& a) {
     switch (algorithm) {
     case PMSORT:
@@ -163,30 +179,60 @@ void runSort(int algorithm, vector<int>& a) {
     }
 }
 
-bool isSorted(const vector<int>& a) {
-    return is_sorted(a.begin(), a.end());
-}
+struct Result {
+    double ms = 0.0;
+    bool correct = false;
+};
 
-// Bench
-
-double benchmarkOne(int algorithm,
-                    const vector<int>& original,
-                    vector<int>& work,
-                    bool& valid) {
-    // Exclude copy time from sorting time.
+// benchmark sorting time and validate the result
+Result benchmarkOne(
+    int algorithm,
+    const vector<int>& original,
+    const vector<int>& expected,
+    vector<int>& work
+) {
     work = original;
 
-    const auto start = Clock::now();
+    auto start = Clock::now();
 
     runSort(algorithm, work);
 
-    const auto end = Clock::now();
+    auto end = Clock::now();
 
-    valid = isSorted(work);
+    Result result;
 
-    return chrono::duration<double, milli>(
+    result.ms = chrono::duration<double, milli>(
         end - start
     ).count();
+
+    result.correct =
+        is_sorted(work.begin(), work.end()) &&
+        work == expected;
+
+    return result;
+}
+
+// calculate average execution time
+double average(const array<double, RUNS>& values) {
+    double sum = 0.0;
+
+    for (double x : values)
+        sum += x;
+
+    return sum / RUNS;
+}
+
+// calculate population standard deviation
+double stddev(const array<double, RUNS>& values) {
+    double mean = average(values);
+    double sum = 0.0;
+
+    for (double x : values) {
+        double diff = x - mean;
+        sum += diff * diff;
+    }
+
+    return sqrt(sum / RUNS);
 }
 
 int main() {
@@ -195,106 +241,155 @@ int main() {
 
     cout << fixed << setprecision(3);
 
-   cout << "Benchmark\n";
+    cout << "pms sorting benchmark\n";
+    cout << "elements: " << N << '\n';
+    cout << "runs: " << RUNS << '\n';
+    cout << "seed: " << SEED << '\n';
+    cout << "nearly sorted swaps: " << NEARLY_SWAPS << '\n';
 
-    cout << "Building Zipf CDF...\n";
     const vector<double> zipfCDF = buildZipfCDF();
 
-    cout << "Running warmup...\n";
-
-    vector<int> warmup = generateData(0, zipfCDF);
     vector<int> work;
 
-    for (int algorithm = 0; algorithm < 3; ++algorithm) {
-        bool valid = false;
+    // warm up each algorithm using the same dataset
+    const vector<int> warmupOriginal = generateData(0, zipfCDF);
+    vector<int> warmupExpected = warmupOriginal;
 
-        double ms = benchmarkOne(
-            algorithm, warmup, work, valid
+    sort(warmupExpected.begin(), warmupExpected.end());
+
+    for (int algorithm = 0;
+         algorithm < ALGORITHM_COUNT;
+         ++algorithm) {
+
+        Result result = benchmarkOne(
+            algorithm,
+            warmupOriginal,
+            warmupExpected,
+            work
         );
 
-        cout << "Warmup " << ALG_NAMES[algorithm]
-             << ": " << ms << " ms"
-             << " | Sorted: " << (valid ? "yes" : "no")
-             << '\n';
+        if (!result.correct) {
+            cerr << "error: warmup validation failed for "
+                 << ALG_NAMES[algorithm] << '\n';
 
-        if (!valid) {
-            cerr << "errkr: Warmup failed.\n";
             return 1;
         }
     }
 
-    warmup.clear();
-    warmup.shrink_to_fit();
-    work.clear();
-    work.shrink_to_fit();
-    cout << "\nRunning...\n";
+    vector<int>().swap(work);
 
-    // times[case][algorithm][run]
-    array<array<array<double, RUNS>, 3>, 6> times{};
+    // store execution times for every case and algorithm
+    array<
+        array<array<double, RUNS>, ALGORITHM_COUNT>,
+        CASE_COUNT
+    > times{};
 
-    for (int testCase = 0; testCase < 6; ++testCase) {
-        cout << "Case: " << CASE_NAMES[testCase] << '\n';
+    for (int testCase = 0;
+         testCase < CASE_COUNT;
+         ++testCase) {
 
         const vector<int> original =
             generateData(testCase, zipfCDF);
 
+        vector<int> expected = original;
+        sort(expected.begin(), expected.end());
+
         for (int run = 0; run < RUNS; ++run) {
-            cout << "Run " << run + 1 << '/' << RUNS << '\n';
+            array<int, ALGORITHM_COUNT> order = {
+                PMSORT,
+                STD_SORT,
+                STABLE_SORT
+            };
 
-            const int offset = (run + testCase) % 3;
+            shuffle(
+                order.begin(),
+                order.end(),
+                orderRng
+            );
 
-            for (int position = 0; position < 3; ++position) {
-                const int algorithm = (position + offset) % 3;
-
-                bool valid = false;
-                const double ms = benchmarkOne(
-                    algorithm, original, work, valid
+            for (int algorithm : order) {
+                Result result = benchmarkOne(
+                    algorithm,
+                    original,
+                    expected,
+                    work
                 );
-                times[testCase][algorithm][run] = ms;
 
-                cout << "  " << left << setw(20)
-                     << ALG_NAMES[algorithm]
-                     << right << setw(12) << ms << " ms"
-                     << " | Sorted: "
-                     << (valid ? "yes" : "no")
-                     << '\n';
+                if (!result.correct) {
+                    cerr << "error: validation failed\n"
+                         << "case: " << CASE_NAMES[testCase] << '\n'
+                         << "algorithm: "
+                         << ALG_NAMES[algorithm] << '\n'
+                         << "run: " << run + 1 << '\n';
 
-                if (!valid) {
-                    cerr << "error: " << ALG_NAMES[algorithm]
-                         << " failed on " << CASE_NAMES[testCase]
-                         << ", run " << run + 1 << '\n';
                     return 1;
                 }
+
+                times[testCase][algorithm][run] =
+                    result.ms;
             }
         }
     }
 
-    cout << "Avg results\n";
+    // print average execution times
+    cout << "\naverage results (ms)\n";
 
-    cout << left << setw(18) << "Case";
+    cout << left << setw(20) << "case";
 
-    for (const auto& name : ALG_NAMES)
-        cout << right << setw(18) << name;
+    for (const string& name : ALG_NAMES)
+        cout << right << setw(20) << name;
 
     cout << '\n';
 
-    for (int testCase = 0; testCase < 6; ++testCase) {
-        cout << left << setw(18) << CASE_NAMES[testCase];
+    for (int testCase = 0;
+         testCase < CASE_COUNT;
+         ++testCase) {
 
-        for (int algorithm = 0; algorithm < 3; ++algorithm) {
-            double sum = 0.0;
+        cout << left << setw(20)
+             << CASE_NAMES[testCase];
 
-            for (int run = 0; run < RUNS; ++run)
-                sum += times[testCase][algorithm][run];
+        for (int algorithm = 0;
+             algorithm < ALGORITHM_COUNT;
+             ++algorithm) {
 
-            cout << right << setw(15)
-                 << sum / RUNS << " ms";
+            cout << right << setw(17)
+                 << average(times[testCase][algorithm])
+                 << " ms";
         }
 
         cout << '\n';
     }
 
-   
+    // print execution time standard deviations
+    cout << "\nstandard deviation (ms)\n";
+
+    cout << left << setw(20) << "case";
+
+    for (const string& name : ALG_NAMES)
+        cout << right << setw(20) << name;
+
+    cout << '\n';
+
+    for (int testCase = 0;
+         testCase < CASE_COUNT;
+         ++testCase) {
+
+        cout << left << setw(20)
+             << CASE_NAMES[testCase];
+
+        for (int algorithm = 0;
+             algorithm < ALGORITHM_COUNT;
+             ++algorithm) {
+
+            cout << right << setw(17)
+                 << stddev(times[testCase][algorithm])
+                 << " ms";
+        }
+
+        cout << '\n';
+    }
+
+    cout << "\nvalidation: all passed\n";
+
     return 0;
 }
-
