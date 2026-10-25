@@ -392,21 +392,26 @@ class Sorter {
         while (leftPos < leftCount) data[outPos++] = std::move(buf[leftPos++]);  // Rest of the right side is in place
     }
 
-    // True if the whole range has at most kMaxRuns natural runs (non-decreasing or strictly
-    // decreasing). Exits early, so random data costs about 2 * kMaxRuns comparisons.
-    bool fewRuns() const {
-        std::size_t runs = 0;
-        for (std::size_t start = 0; start < size_;) {
-            std::size_t end = start + 1;
-            if (end < size_) {
-                if (less_(data_[end], data_[end - 1])) { while (++end < size_ && less_(data_[end], data_[end - 1])) {} }
-                else                                   { while (++end < size_ && !less_(data_[end], data_[end - 1])) {} }
+    // True if the whole range has at most kMaxRuns natural runs, where a run is strictly
+// increasing or strictly decreasing. An equal pair breaks the run, so data with many
+// duplicates counts as many runs and goes to partitioning. Exits early on random data.
+bool fewRuns() const {
+    std::size_t runs = 0;
+    for (std::size_t start = 0; start < size_;) {
+        std::size_t end = start + 1;
+        if (end < size_) {
+            if (less_(data_[end], data_[end - 1])) {            // strictly decreasing
+                while (++end < size_ && less_(data_[end], data_[end - 1])) {}
+            } else if (less_(data_[end - 1], data_[end])) {     // strictly increasing
+                while (++end < size_ && less_(data_[end - 1], data_[end])) {}
             }
-            if (++runs > kMaxRuns) return false;
-            start = end;
+            // else: equal pair -> run of length 1, counted as a separate run
         }
-        return true;
+        if (++runs > kMaxRuns) return false;
+        start = end;
     }
+    return true;
+}
 
     // Leaf range: merge natural runs for structured data, merge sort blocks for random data.
     // Always O(count log count), so it is also the fallback used by partitionSort.
