@@ -21,7 +21,7 @@ using ll = long long;
 // config
 
 constexpr size_t N = 10'000'000;
-constexpr int RUNS = 10;
+constexpr int RUNS = 5;
 constexpr size_t NEARLY_SWAPS = N / 1000;
 
 constexpr uint32_t SEED = 4042026;
@@ -31,7 +31,7 @@ constexpr int ZIPF_RANGE = 100'000;
 constexpr double ZIPF_EXPONENT = 1.2;
 
 enum Algorithm {
-    pmsort = 0,
+    PMSORT = 0,
     STD_SORT = 1,
     STABLE_SORT = 2
 };
@@ -149,7 +149,7 @@ vector<int> generateData(int type,
 
 void runSort(int algorithm, vector<int>& a) {
     switch (algorithm) {
-    case pmsort:
+    case PMSORT:
         pmsort(a.begin(), a.end(), less<int>{});
         break;
 
