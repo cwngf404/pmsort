@@ -31,13 +31,13 @@ constexpr int ZIPF_RANGE = 100'000;
 constexpr double ZIPF_EXPONENT = 1.2;
 
 enum Algorithm {
-    PMS = 0,
+    pmsort = 0,
     STD_SORT = 1,
     STABLE_SORT = 2
 };
 
 const array<string, 3> ALG_NAMES = {
-    "PMS",
+    "pmsort",
     "std::sort",
     "std::stable_sort"
 };
@@ -149,8 +149,8 @@ vector<int> generateData(int type,
 
 void runSort(int algorithm, vector<int>& a) {
     switch (algorithm) {
-    case PMS:
-        pms(a.begin(), a.end(), less<int>{});
+    case pmsort:
+        pmsort(a.begin(), a.end(), less<int>{});
         break;
 
     case STD_SORT:
