@@ -392,23 +392,31 @@ class Sorter {
         while (leftPos < leftCount) data[outPos++] = std::move(buf[leftPos++]);  // Rest of the right side is in place
     }
 
-    // True if the whole range has at most kMaxRuns natural runs, where a run is strictly
-// increasing or strictly decreasing. An equal pair breaks the run, so data with many
-// duplicates counts as many runs and goes to partitioning. Exits early on random data.
+// True if the whole range is made of at most kMaxRuns strictly monotone runs and has
+// (almost) no equal neighbours. Three-way check per adjacent pair: <, >, =.
+// Equal pairs are not part of any run: they signal duplicates, which partitioning
+// handles best (equal partitions are never sorted again), so they count against
+// the budget heavily and send the range to partitioning.
 bool fewRuns() const {
-    std::size_t runs = 0;
-    for (std::size_t start = 0; start < size_;) {
-        std::size_t end = start + 1;
-        if (end < size_) {
-            if (less_(data_[end], data_[end - 1])) {            // strictly decreasing
-                while (++end < size_ && less_(data_[end], data_[end - 1])) {}
-            } else if (less_(data_[end - 1], data_[end])) {     // strictly increasing
-                while (++end < size_ && less_(data_[end - 1], data_[end])) {}
-            }
-            // else: equal pair -> run of length 1, counted as a separate run
+    constexpr std::size_t kMaxEqualPairs = kMaxRuns / 4;   // Tolerate a few stray duplicates
+    std::size_t runs = 0, equalPairs = 0;
+
+    for (std::size_t start = 0; start + 1 < size_;) {
+        const bool lt = less_(data_[start + 1], data_[start]);   // next <  current
+        const bool gt = !lt && less_(data_[start], data_[start + 1]); // next >  current
+
+        if (!lt && !gt) {                                        // next == current
+            if (++equalPairs > kMaxEqualPairs) return false;     // Duplicates -> partitioning
+            ++start;
+            continue;
         }
+
+        std::size_t end = start + 2;
+        if (lt) { while (end < size_ && less_(data_[end], data_[end - 1])) ++end; }
+        else    { while (end < size_ && less_(data_[end - 1], data_[end])) ++end; }
+
         if (++runs > kMaxRuns) return false;
-        start = end;
+        start = end - 1;   // Last element may begin the next run (or an equal pair)
     }
     return true;
 }
