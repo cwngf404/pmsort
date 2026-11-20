@@ -1,0 +1,30 @@
+name: Apple Silicon
+
+on:
+  workflow_dispatch: # Enables the manual "Run workflow" button
+
+jobs:
+  apple-gcc-bench:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install GNU g++
+        run: |
+          brew install gcc
+
+      - name: Print CPU & Compiler Info
+        run: |
+          sysctl -n machdep.cpu.brand_string
+          g++-15 --version || g++-14 --version
+
+      - name: Copy, Compile & Run
+        run: |
+          mkdir -p src
+          cp bench/bench.cpp src/bench.cpp
+          CXX=$(command -v g++-15 || command -v g++-14)
+          $CXX -O3 -march=native -Isrc src/bench.cpp -o src/bench
+          ./src/bench
+          
