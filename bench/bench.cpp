@@ -15,7 +15,7 @@
 using namespace std;
 using Clock = chrono::steady_clock;
 
-constexpr size_t N = 10'000'000;
+constexpr size_t N = 100'000'000;
 constexpr int RUNS = 5;
 constexpr size_t NEARLY_SWAPS = N / 1000;
 
